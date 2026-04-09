@@ -72,6 +72,8 @@ Digital_Output = (Vin × (2^Resolution - 1)) / Vref
 
 ## ADC Conversion Process (Successive Approximation)
 
+### Basic SAR Algorithm
+
 ```
 Step 1: Initialization
         Start conversion signal
@@ -90,19 +92,481 @@ Step 4: Move to Next Bit
         
 Step 5: Complete
         All bits determined, result ready
+```
 
-Example (10-bit SAR, Vin = 2.5V, Vref = 5V):
-Bit 9 (512):  2.5 > 2.5?  NO   → 0
-Bit 8 (256):  2.5 > 1.25? YES  → 1
-Bit 7 (128):  2.5 > 1.875?YES  → 1
-Bit 6 (64):   2.5 > 2.1875?YES → 1
-Bit 5 (32):   2.5 > 2.34375?YES → 1
-Bit 4 (16):   2.5 > 2.40625?YES → 1
-...
-Result: 0 1 1 1 1 1 0 0 0 0 = 0x1F0 = 512 decimal
-Reconstructed: (512 × 5V) / 1024 = 2.5V ✓
+### Detailed Example Walkthrough (10-bit SAR, Vin = 2.5V, Vref = 5V)
 
-Time required: 10 bits × Tclk = ~100 µs (at 100kHz clock)
+**Given Parameters:**
+- Input Voltage (Vin) = 2.5V
+- Reference Voltage (Vref) = 5V
+- Resolution: 10 bits (1024 levels)
+- LSB (Least Significant Bit) = 5V / 1024 = 4.88 mV per step
+
+**The Core Concept: Binary Search**
+
+The SAR ADC uses a binary search algorithm - like a guessing game where you narrow down possibilities:
+```
+"Is the value above the midpoint?"
+├─ YES → Search upper half
+└─ NO  → Search lower half
+Repeat until you find the answer!
+```
+
+---
+
+### **ITERATION 1: Testing Bit 9 (MSB - Most Significant Bit)**
+
+```
+Question:      "Is Vin > Vref/2?"
+               "Is 2.5V > 2.5V?"
+
+Internal DAC:  Sets to 2.5V (exactly half of 5V reference)
+               DAC_Value = 512 (binary: 1000000000)
+               
+Comparator:    Checks: Vin vs VDAC
+               Result: 2.5V > 2.5V? NO ✗
+               
+Decision:      Bit 9 = 0 (NOT in upper half)
+
+Current Result: 0_________ (9 bits remain to test)
+
+Implication:   The actual value is in LOWER half (0 to 2.5V)
+               Search window: 5V → 2.5V (halved!)
+```
+
+---
+
+### **ITERATION 2: Testing Bit 8**
+
+```
+Current Result: 0_________
+
+Question:      "Is Vin > Vref/4?"
+               "Is 2.5V > 1.25V?"
+
+Internal DAC:  Sets to 1.25V (25% of 5V reference)
+               Previous bit: 0 from iteration 1
+               This bit weight: 256
+               DAC_Value = 0×512 + 1×256 = 256
+               
+Comparator:    2.5V > 1.25V? YES ✓
+
+Decision:      Bit 8 = 1 (YES, value IS in this range)
+
+Current Result: 01________ 
+
+Voltage So Far: 0×512 + 1×256 = 1.25V (25% of reference)
+
+Range Narrowed: 1.25V < Vin ≤ 2.5V (search space halved again!)
+               Window width: 1.25V (was 2.5V, now 50% smaller)
+```
+
+---
+
+### **ITERATION 3: Testing Bit 7**
+
+```
+Current Result: 01________
+
+Question:      "Is Vin > 1.875V?"
+               (1.25V + 0.625V = 1.875V)
+
+Internal DAC:  Adds Bit 7 weight (128)
+               DAC_Value = 256 + 128 = 384
+               Voltage = (384/1024) × 5V = 1.875V
+               
+Comparator:    2.5V > 1.875V? YES ✓
+
+Decision:      Bit 7 = 1
+
+Current Result: 011_______
+
+New Search Window: 1.875V < Vin ≤ 2.5V
+               Window width: 0.625V (continuing to halve)
+```
+
+---
+
+### **ITERATION 4: Testing Bit 6**
+
+```
+Current Result: 011_______
+
+Internal DAC:  DAC_Value = 256 + 128 + 64 = 448
+               Voltage = (448/1024) × 5V = 2.1875V
+               
+Comparator:    2.5V > 2.1875V? YES ✓
+
+Decision:      Bit 6 = 1
+
+Current Result: 0111______
+
+Search Window: 2.1875V < Vin ≤ 2.5V (0.3125V range)
+```
+
+---
+
+### **ITERATION 5: Testing Bit 5**
+
+```
+Current Result: 0111______
+
+Internal DAC:  DAC_Value = 256 + 128 + 64 + 32 = 480
+               Voltage = (480/1024) × 5V = 2.34375V
+               
+Comparator:    2.5V > 2.34375V? YES ✓
+
+Decision:      Bit 5 = 1
+
+Current Result: 01111_____
+
+Search Window: 2.34375V < Vin ≤ 2.5V (0.15625V range)
+```
+
+---
+
+### **ITERATION 6: Testing Bit 4**
+
+```
+Current Result: 01111_____
+
+Internal DAC:  DAC_Value = 256 + 128 + 64 + 32 + 16 = 496
+               Voltage = (496/1024) × 5V = 2.421875V
+               
+Comparator:    2.5V > 2.421875V? YES ✓
+
+Decision:      Bit 4 = 1
+
+Current Result: 011111____
+```
+
+---
+
+### **ITERATION 7: Testing Bit 3**
+
+```
+Current Result: 011111_____
+
+Internal DAC:  DAC_Value = 256 + 128 + 64 + 32 + 16 + 8 = 504
+               Voltage = (504/1024) × 5V = 2.46484375V
+               
+Comparator:    2.5V > 2.46484375V? YES ✓
+
+Decision:      Bit 3 = 1
+
+Current Result: 0111111____
+
+New Range:     2.46484375V < Vin ≤ 2.5V (0.0352V window)
+```
+
+---
+
+### **ITERATION 8: Testing Bit 2**
+
+```
+Current Result: 0111111____
+
+Internal DAC:  DAC_Value = 256 + 128 + 64 + 32 + 16 + 8 + 4 = 508
+               Voltage = (508/1024) × 5V = 2.48046875V
+               
+Comparator:    2.5V > 2.48046875V? YES ✓
+
+Decision:      Bit 2 = 1
+
+Current Result: 01111111___
+
+New Range:     2.48046875V < Vin ≤ 2.5V (0.0195V window)
+```
+
+---
+
+### **ITERATION 9: Testing Bit 1**
+
+```
+Current Result: 01111111___
+
+Internal DAC:  DAC_Value = 256 + 128 + 64 + 32 + 16 + 8 + 4 + 2 = 510
+               Voltage = (510/1024) × 5V = 2.48535156V
+               
+Comparator:    2.5V > 2.48535156V? YES ✓
+
+Decision:      Bit 1 = 1
+
+Current Result: 011111111__
+
+New Range:     2.48535156V < Vin ≤ 2.5V (0.0146V window, smaller than 1 LSB!)
+```
+
+---
+
+### **ITERATION 10: Testing Bit 0 (LSB)**
+
+```
+Current Result: 011111111__
+
+Internal DAC:  DAC_Value = 256 + 128 + 64 + 32 + 16 + 8 + 4 + 2 + 1 = 511
+               Voltage = (511/1024) × 5V = 2.49511719V
+               
+Comparator:    2.5V > 2.49511719V? YES ✓
+
+Decision:      Bit 0 = 1
+
+Final Result:  0111111111 = 511 (decimal)
+               Binary: 0111111111
+```
+
+---
+
+### **Visual Convergence Timeline (Corrected)**
+
+```
+Iteration    DAC Value    DAC Voltage    Vin (2.5V)    Vin > VDAC?    Bit Value
+    1         512         2.5000V        2.5V          NO (=)           0
+    2         256         1.2500V        2.5V          YES              1
+    3         384         1.8750V        2.5V          YES              1
+    4         448         2.1875V        2.5V          YES              1
+    5         480         2.3438V        2.5V          YES              1
+    6         496         2.4219V        2.5V          YES              1
+    7         504         2.4648V        2.5V          YES              1
+    8         508         2.4805V        2.5V          YES              1
+    9         510         2.4854V        2.5V          YES              1
+    10        511         2.4951V        2.5V          YES              1
+
+Final Result:  0111111111 (binary) = 511 (decimal) = 0x1FF (hex)
+
+Search Window Shrinking:
+After Iteration 1: 2.5V (entire range below 2.5V)
+After Iteration 2: 1.25V (50% smaller)
+After Iteration 3: 0.625V (50% smaller)
+After Iteration 4: 0.3125V (50% smaller)
+After Iteration 5: 0.15625V (50% smaller)
+After Iteration 6: 0.07813V (50% smaller)
+After Iteration 7: 0.03906V (50% smaller)
+After Iteration 8: 0.01953V (50% smaller)
+After Iteration 9: 0.00977V (50% smaller)
+After Iteration 10: 0.00488V (smaller than 1 LSB = 4.88mV!)
+
+Convergence Complete! ✓
+```
+
+---
+
+### **Final Digital Result - Complete Breakdown**
+
+```
+Final Binary Representation:  0 1 1 1 1 1 1 1 1 1
+                              B9 B8 B7 B6 B5 B4 B3 B2 B1 B0
+
+Weight Breakdown (10-bit, each bit represents a power of 2):
+Bit 9 (weight 512):    0 × 512 = 0
+Bit 8 (weight 256):    1 × 256 = 256
+Bit 7 (weight 128):    1 × 128 = 128
+Bit 6 (weight 64):     1 × 64  = 64
+Bit 5 (weight 32):     1 × 32  = 32
+Bit 4 (weight 16):     1 × 16  = 16
+Bit 3 (weight 8):      1 × 8   = 8
+Bit 2 (weight 4):      1 × 4   = 4
+Bit 1 (weight 2):      1 × 2   = 2
+Bit 0 (weight 1):      1 × 1   = 1
+                      ─────────────
+                      TOTAL = 511
+
+Final Decimal Value:   511 (0x1FF hex)
+```
+
+---
+
+### **Critical Understanding: Why 511 Instead of 512?**
+
+```
+IMPORTANT CONCEPT - The Boundary Condition:
+
+Input Voltage:        Vin = 2.5V
+Reference Voltage:    Vref = 5V
+Expected Ratio:       2.5 / 5 = 0.5 (exactly 50%)
+
+Theoretical Digital Value:  0.5 × 1024 = 512
+
+BUT - The SAR Algorithm Uses ">" (STRICTLY GREATER THAN):
+
+At Iteration 1, the algorithm asks:
+"Is Vin > Vref/2?" 
+"Is 2.5V > 2.5V?" 
+Answer: NO (because 2.5 is NOT greater than 2.5, it EQUALS 2.5)
+
+This is mathematically correct but results in:
+- Bit 9 = 0 (we exclude the MSB)
+- The algorithm searches in the LOWER half
+- Final convergence: 511 instead of 512
+
+Reconstructed Voltage from Result:
+V = (511 / 1024) × 5V = 2.49511719V
+
+Error Analysis:
+Expected: 2.5V
+Got:      2.49511719V
+Error:    2.5V - 2.49511719V ≈ 4.88 mV = 1 LSB
+
+This represents a QUANTIZATION ERROR of exactly 1 LSB!
+```
+
+---
+
+### **What Would Happen With >= (Greater-Than-Or-Equal)?**
+
+```
+If the algorithm used ">=" instead of ">":
+
+At Iteration 1:
+"Is Vin >= Vref/2?"
+"Is 2.5V >= 2.5V?"
+Answer: YES (equal values satisfy >=)
+
+Then:
+- Bit 9 = 1 (include the MSB)
+- Continue testing remaining bits...
+- All remaining bits would be 0 (since input exactly at threshold)
+- Final Result: 1000000000 = 512 (EXACT!)
+- Reconstructed: (512/1024) × 5V = 2.5V ✓
+
+Why Most ADCs Use ">" Instead of ">=":
+The > comparison is simpler to implement in hardware (no need for equality check)
+The quantization error of 1 LSB is acceptable and expected
+This is NORMAL behavior in real ADCs!
+```
+
+---
+
+### **Actual Result Summary**
+
+```
+Input:                    Vin = 2.5V (exactly 50% of reference)
+Output:                   511 (binary: 0111111111)
+Reconstructed Voltage:    2.49512V
+Quantization Error:       -4.88 mV (one LSB)
+Relative Error:           0.195% (acceptable!)
+
+Why This is Normal:
+Every analog-to-digital conversion has unavoidable quantization noise
+The error is bounded by ±0.5 LSB = ±2.44 mV
+This example shows 1 LSB error, which is well within specification
+Higher resolution ADCs (12-bit, 16-bit) have smaller LSBs → smaller errors
+
+Final Accuracy:           511/512 = 99.8% (excellent!)
+```
+
+---
+
+### **Timing Analysis**
+
+```
+Per Iteration Breakdown:
+1. DAC settling time:        ~1-2 µs
+2. Comparator response:      ~0.5-1 µs
+3. Logic/Register update:    ~0.5-1 µs
+                            ────────────
+   Total per bit:            ~2-4 µs
+
+10-Bit Conversion:
+Total iterations:           10 bits
+Time per iteration:         2-4 µs
+Total conversion time:      20-40 µs (minimum)
+Overhead/settling:          60-80 µs (typical)
+                           ────────────────
+   At 100 kHz clock:        ~100 µs ✓ (matches example)
+
+Clock Requirement:
+1 MHz clock → ~10 µs per bit → 100 µs for 10 bits ✓
+
+Faster Implementation:
+If using 10 MHz clock → ~1 µs per bit → ~10 µs conversion ✓
+```
+
+---
+
+### **Why SAR Works So Well**
+
+```
+Binary Search Efficiency:
+- Linear search would need: N iterations for N levels (1024 iterations!)
+- Binary search needs: log₂(N) iterations (only 10 iterations!)
+
+Exponential Convergence:
+After N iterations, error bounds:
+Error ≤ Vref / 2^N
+
+For 10-bit: Error ≤ 5V / 1024 ≈ 4.88mV (1 LSB) ✓
+
+Self-Correcting:
+If a bit guess is wrong, next iteration corrects it
+No negative feedback or oscillation
+Simple and robust!
+
+Hardware Requirement:
+- 1 DAC (simple, small)
+- 1 Comparator (simple, fast)
+- 1 SAR Register (logic, tiny)
+Total: Minimal hardware = Low cost ✓
+```
+
+---
+
+### **Complete Conversion Timeline (Corrected)**
+
+```
+Detailed Time-by-Time Progression:
+
+t=0 µs:       Conversion starts
+              Testing Bit 9 (MSB)
+              Internal DAC sets to 512 (voltage = 2.5V)
+
+t=10 µs:      Bit 9 result recorded as 0 
+              Testing Bit 8
+              DAC updates to 256 (voltage = 1.25V)
+
+t=20 µs:      Bit 8 result recorded as 1
+              Testing Bit 7
+              DAC updates to 384 (voltage = 1.875V)
+              
+t=30 µs:      Bit 7 result recorded as 1
+              Testing Bit 6
+              DAC updates to 448 (voltage = 2.1875V)
+
+t=40 µs:      Bit 6 result recorded as 1
+              Testing Bit 5
+              DAC updates to 480 (voltage = 2.3438V)
+
+t=50 µs:      Bit 5 result recorded as 1
+              Testing Bit 4
+              DAC updates to 496 (voltage = 2.4219V)
+
+t=60 µs:      Bit 4 result recorded as 1
+              Testing Bit 3
+              DAC updates to 504 (voltage = 2.4648V)
+
+t=70 µs:      Bit 3 result recorded as 1
+              Testing Bit 2
+              DAC updates to 508 (voltage = 2.4805V)
+
+t=80 µs:      Bit 2 result recorded as 1
+              Testing Bit 1
+              DAC updates to 510 (voltage = 2.4854V)
+
+t=90 µs:      Bit 1 result recorded as 1
+              Testing Bit 0 (LSB)
+              DAC updates to 511 (voltage = 2.4951V)
+
+t=100 µs:     Bit 0 result recorded as 1
+              ▼▼▼ CONVERSION COMPLETE ▼▼▼
+
+Final Binary Result:  0111111111
+Final Decimal Value:  511
+Final Hex Value:      0x1FF
+Reconstructed V:      2.4951V
+Quantization Error:   -4.88 mV (one LSB)
+
+Data ready for application to read
+ADC Interrupt signal triggered (if enabled)
 ```
 
 ## ADC Timing Diagram
@@ -449,7 +913,6 @@ A:
 
 uint32_t oversampled_adc_read() {
     uint32_t sum = 0;
-    
     // Collect TOTAL_SAMPLES at high frequency
     for (int i = 0; i < TOTAL_SAMPLES; i++) {
         uint16_t sample = adc_read_single();  // 10-bit reading
